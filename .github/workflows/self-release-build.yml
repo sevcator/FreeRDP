@@ -1,0 +1,128 @@
+name: Self Release Build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "FreeRDP tag to build (e.g. 3.7.0). Empty = latest release"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      source_tag: ${{ steps.vars.outputs.source_tag }}
+      release_tag: ${{ steps.vars.outputs.release_tag }}
+      release_name: ${{ steps.vars.outputs.release_name }}
+    steps:
+      - name: Resolve source/release tags
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            SRC_TAG="${{ github.event.release.tag_name }}"
+            REL_TAG="${SRC_TAG}+1"
+          else
+            INPUT_TAG="${{ inputs.source_tag }}"
+            if [[ -z "${INPUT_TAG}" ]]; then
+              SRC_TAG="$(curl -fsSL https://api.github.com/repos/freerdp/freerdp/releases/latest | jq -r '.tag_name')"
+            else
+              SRC_TAG="${INPUT_TAG}"
+            fi
+            REL_TAG="${SRC_TAG}+1"
+          fi
+
+          echo "source_tag=${SRC_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${REL_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_name=Self build for ${SRC_TAG}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            artifact: freerdp-linux
+          - os: windows-latest
+            name: windows
+            artifact: freerdp-windows
+          - os: macos-latest
+            name: other
+            artifact: freerdp-other
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Remove local repository source
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - name: Download FreeRDP source from GitHub
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.source_tag }}"
+          URL="https://github.com/FreeRDP/FreeRDP/archive/refs/tags/${TAG}.tar.gz"
+          curl -fL "$URL" -o freerdp.tar.gz
+          tar -xzf freerdp.tar.gz
+          mv FreeRDP-* src
+
+      - name: Configure (CMake)
+        shell: bash
+        run: |
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Pack artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cmake --install build --prefix out/install || true
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            powershell -Command "Compress-Archive -Path out/install/* -DestinationPath ${{ matrix.artifact }}.zip"
+          else
+            tar -czf "${{ matrix.artifact }}.tar.gz" -C out install
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create/update release and upload assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.release_tag }}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "${{ needs.prepare.outputs.release_name }}" --notes "Automated self-build from FreeRDP ${{ needs.prepare.outputs.source_tag }}"
+          gh release upload "$TAG" dist/** --clobber
