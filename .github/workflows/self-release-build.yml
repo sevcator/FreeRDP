@@ -77,10 +77,59 @@ jobs:
           tar -xzf freerdp.tar.gz
           mv FreeRDP-* src
 
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build cmake pkg-config \
+            libssl-dev libx11-dev libxext-dev libxinerama-dev libxcursor-dev \
+            libxkbfile-dev libxrandr-dev libxi-dev libxrender-dev libxfixes-dev \
+            libxv-dev libxdamage-dev libxcomposite-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libpulse-dev libcups2-dev \
+            libasound2-dev libpcap-dev libjpeg-dev libfuse3-dev libusb-1.0-0-dev \
+            libavcodec-dev libavutil-dev libswscale-dev libzstd-dev libxml2-dev zlib1g-dev
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install cmake pkg-config openssl xz zlib jpeg-turbo ffmpeg libusb zstd
+
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          vcpkg install \
+            zlib:x64-windows \
+            openssl:x64-windows \
+            libjpeg-turbo:x64-windows \
+            libusb:x64-windows \
+            ffmpeg:x64-windows
+
       - name: Configure (CMake)
         shell: bash
         run: |
-          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Linux)
+              cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
+              ;;
+            Windows)
+              cmake -S src -B build \
+                -G "Visual Studio 17 2022" \
+                -A x64 \
+                -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+              ;;
+            macOS)
+              cmake -S src -B build -DCMAKE_BUILD_TYPE=Release
+              ;;
+          esac
 
       - name: Build
         shell: bash
