@@ -125,4 +125,4 @@ jobs:
           TAG="${{ needs.prepare.outputs.release_tag }}"
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --title "${{ needs.prepare.outputs.release_name }}" --notes "Automated self-build from FreeRDP ${{ needs.prepare.outputs.source_tag }}"
-          gh release upload "$TAG" dist/** --clobber
+          gh release upload "$TAG" dist/*/* --clobber
